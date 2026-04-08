@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Pacman</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background: #000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  font-family: monospace;
+  user-select: none;
+}
+canvas { display: block; }
+#hint { margin-top: 10px; color: #444; font-size: 0.8rem; letter-spacing: 1px; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">↑ ↓ ← →  hareket &nbsp;|&nbsp; R: yeniden başla</div>
+
+<script>
+const T    = 22;           // tile size (px)
+const COLS = 21, ROWS = 21;
+const CW   = COLS * T;
+const CH   = ROWS * T;
+const HUD  = 38;
+
+// 1 = wall, 0 = dot / path
+const TMPL = [
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+  [1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+  [1,0,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,0,1],
+  [1,0,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,0,1],
+  [1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1],
+  [1,0,1,1,0,1,0,1,1,1,1,1,1,1,0,1,0,1,1,0,1],
+  [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],
+  [1,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,1],
+  [1,1,1,1,0,1,0,0,0,0,0,0,0,0,0,1,0,1,1,1,1],
+  [1,1,1,1,0,1,0,1,1,0,0,0,1,1,0,1,0,1,1,1,1],
+  [1,1,1,1,0,0,0,1,0,0,0,0,0,1,0,0,0,1,1,1,1],
+  [1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1,0,1,1,1,1],
+  [1,1,1,1,0,1,0,0,0,0,0,0,0,0,0,1,0,1,1,1,1],
+  [1,1,1,1,0,1,0,1,1,1,1,1,1,1,0,1,0,1,1,1,1],
+  [1,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,1],
+  [1,0,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,0,1],
+  [1,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,1],
+  [1,1,0,1,0,1,0,1,1,1,1,1,1,1,0,1,0,1,0,1,1],
+  [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],
+  [1,0,1,1,1,1,1,1,0,1,1,1,0,1,1,1,1,1,1,0,1],
+  [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1],
+];
+
+const canvas = document.getElementById('c');
+canvas.width  = CW;
+canvas.height = CH + HUD;
+const ctx = canvas.getContext('2d');
+
+// ── State ──────────────────────────────────────────────────────
+let map, dots, score, totalDots, eatenDots;
+let pac, ghosts, nextDir, state, startTime, rafId;
+let mouthT = 0, mouthD = 1;
+let lastPac = 0, lastGhost = 0;
+
+const PAC_MS   = 175;   // ms per Pacman step
+const GHOST_MS = 430;   // ms per ghost step
+
+// ── Input ──────────────────────────────────────────────────────
+const DIRS = {
+  ArrowLeft:  {x:-1, y: 0},
+  ArrowRight: {x: 1, y: 0},
+  ArrowUp:    {x: 0, y:-1},
+  ArrowDown:  {x: 0, y: 1},
+};
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') { init(); return; }
+  if (DIRS[e.key]) { nextDir = DIRS[e.key]; e.preventDefault(); }
+});
+
+// ── Init ───────────────────────────────────────────────────────
+function init() {
+  if (rafId) cancelAnimationFrame(rafId);
+
+  map  = TMPL.map(r => [...r]);
+  dots = TMPL.map(r => r.map(v => v === 0 ? 1 : 0));
+
+  // Remove dots from ghost zone (rows 8–12)
+  for (let r = 8; r <= 12; r++)
+    for (let c = 0; c < COLS; c++) dots[r][c] = 0;
+
+  totalDots  = dots.flat().filter(v => v === 1).length;
+  eatenDots  = 0;
+  score      = 0;
+  pac        = { x:10, y:16, dir:{x:1,y:0} };
+  ghosts     = [
+    { x:9,  y:10, color:'#FF2222' },
+    { x:11, y:10, color:'#FF99DD' },
+  ];
+  nextDir    = {x:1,y:0};
+  state      = 'playing';
+  startTime  = null;
+  mouthT     = 0;
+  mouthD     = 1;
+  lastPac    = 0;
+  lastGhost  = 0;
+
+  rafId = requestAnimationFrame(loop);
+}
+
+// ── Game loop ──────────────────────────────────────────────────
+function loop(ts) {
+  if (!startTime) startTime = ts;
+
+  if (state === 'playing') {
+    if (ts - lastPac > PAC_MS) {
+      movePac();
+      lastPac = ts;
+    }
+    // Ghosts wait 1.5 s before starting
+    if (ts - startTime > 1500 && ts - lastGhost > GHOST_MS) {
+      moveGhosts();
+      lastGhost = ts;
+    }
+    checkHit();
+  }
+
+  // Mouth animation (always runs so it looks alive)
+  mouthT += 0.06 * mouthD;
+  if (mouthT >= 1) { mouthT = 1; mouthD = -1; }
+  if (mouthT <= 0) { mouthT = 0; mouthD =  1; }
+
+  draw();
+  rafId = requestAnimationFrame(loop);
+}
+
+// ── Logic ──────────────────────────────────────────────────────
+function movePac() {
+  function tryDir(d) {
+    const nx = pac.x + d.x, ny = pac.y + d.y;
+    if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) return false;
+    if (map[ny][nx] === 1) return false;
+    pac.x = nx; pac.y = ny; pac.dir = d;
+    return true;
+  }
+  if (!tryDir(nextDir)) tryDir(pac.dir);
+
+  if (dots[pac.y][pac.x]) {
+    dots[pac.y][pac.x] = 0;
+    score += 10;
+    eatenDots++;
+    if (eatenDots === totalDots) state = 'win';
+  }
+}
+
+function moveGhosts() {
+  for (const g of ghosts) {
+    let next;
+    if (Math.random() < 0.22) {
+      // Random valid step (keeps ghosts from being perfectly optimal)
+      const opts = [{x:0,y:-1},{x:0,y:1},{x:-1,y:0},{x:1,y:0}].filter(d => {
+        const nx = g.x + d.x, ny = g.y + d.y;
+        return nx >= 0 && ny >= 0 && nx < COLS && ny < ROWS && map[ny][nx] !== 1;
+      });
+      next = opts.length
+        ? (d => ({x: g.x+d.x, y: g.y+d.y}))(opts[Math.floor(Math.random()*opts.length)])
+        : {x: g.x, y: g.y};
+    } else {
+      next = bfs(g.x, g.y, pac.x, pac.y);
+    }
+    g.x = next.x; g.y = next.y;
+  }
+}
+
+function checkHit() {
+  for (const g of ghosts)
+    if (g.x === pac.x && g.y === pac.y) { state = 'dead'; return; }
+}
+
+// BFS: shortest path from (sx,sy) to (tx,ty) — returns first step
+function bfs(sx, sy, tx, ty) {
+  if (sx === tx && sy === ty) return {x:sx, y:sy};
+  const q    = [{x:sx, y:sy, first:null}];
+  const seen = new Set([`${sx},${sy}`]);
+  for (let i = 0; i < q.length; i++) {
+    const {x, y, first} = q[i];
+    for (const [dx,dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nx = x+dx, ny = y+dy;
+      if (nx<0||ny<0||nx>=COLS||ny>=ROWS||map[ny][nx]===1) continue;
+      const k = `${nx},${ny}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      const nf = first ?? {x:nx, y:ny};
+      if (nx===tx && ny===ty) return nf;
+      q.push({x:nx, y:ny, first:nf});
+    }
+  }
+  return {x:sx, y:sy};
+}
+
+// ── Drawing ────────────────────────────────────────────────────
+function draw() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, CW, CH + HUD);
+
+  drawWalls();
+  drawDots();
+  drawGhosts();
+  drawPac();
+  drawHUD();
+
+  if (state !== 'playing') drawOverlay();
+}
+
+function drawWalls() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (map[r][c] !== 1) continue;
+      const x = c*T, y = r*T;
+      ctx.fillStyle = '#003399';
+      ctx.fillRect(x, y, T, T);
+      ctx.fillStyle = '#1155ee';
+      ctx.fillRect(x+2, y+2, T-4, T-4);
+    }
+  }
+}
+
+function drawDots() {
+  ctx.fillStyle = '#ffffff';
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!dots[r][c]) continue;
+      ctx.beginPath();
+      ctx.arc(c*T + T/2, r*T + T/2, 2.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+}
+
+function drawPac() {
+  const cx = pac.x * T + T/2;
+  const cy = pac.y * T + T/2;
+  const r  = T/2 - 1;
+
+  let rot = 0;
+  if      (pac.dir.x ===  1) rot = 0;
+  else if (pac.dir.x === -1) rot = Math.PI;
+  else if (pac.dir.y === -1) rot = -Math.PI/2;
+  else if (pac.dir.y ===  1) rot = Math.PI/2;
+
+  const a = mouthT * Math.PI * 0.18; // max ~32° per side
+
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.arc(cx, cy, r, rot + a, rot + 2*Math.PI - a);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawGhosts() {
+  for (const g of ghosts) {
+    const gx = g.x * T + 1;
+    const gy = g.y * T + 1;
+    const s  = T - 2;
+    const hx = gx + s / 2;
+    const bw = s / 3;
+
+    ctx.fillStyle = g.color;
+    ctx.beginPath();
+    // Top semicircle (left → right over the top)
+    ctx.arc(hx, gy + s/2, s/2, Math.PI, 0, false);
+    // Right side down
+    ctx.lineTo(gx + s, gy + s);
+    // Wavy bottom: 3 scallops, right → left
+    ctx.quadraticCurveTo(gx + s - bw*0.5, gy + s - 4, gx + s - bw,   gy + s);
+    ctx.quadraticCurveTo(gx + s - bw*1.5, gy + s + 4, gx + s - bw*2, gy + s);
+    ctx.quadraticCurveTo(gx + s - bw*2.5, gy + s - 4, gx,            gy + s);
+    // Left side (closePath connects back to arc start)
+    ctx.closePath();
+    ctx.fill();
+
+    // White eyes
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(hx - s*0.18, gy + s*0.38, s*0.13, 0, Math.PI*2);
+    ctx.arc(hx + s*0.18, gy + s*0.38, s*0.13, 0, Math.PI*2);
+    ctx.fill();
+    // Blue pupils
+    ctx.fillStyle = '#0000cc';
+    ctx.beginPath();
+    ctx.arc(hx - s*0.18, gy + s*0.38, s*0.07, 0, Math.PI*2);
+    ctx.arc(hx + s*0.18, gy + s*0.38, s*0.07, 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function drawHUD() {
+  ctx.fillStyle = '#FFD700';
+  ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`SKOR: ${score}`, 10, CH + 26);
+}
+
+function drawOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(0, 0, CW, CH);
+
+  const [msg, col] = state === 'win'
+    ? ['TEBRİKLER!', '#FFD700']
+    : ['OYUN BİTTİ', '#FF4444'];
+
+  ctx.fillStyle = col;
+  ctx.font = 'bold 32px monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(msg, CW/2, CH/2 - 16);
+
+  ctx.fillStyle = '#aaa';
+  ctx.font = '15px monospace';
+  ctx.fillText(`Skor: ${score}`, CW/2, CH/2 + 14);
+  ctx.fillStyle = '#666';
+  ctx.fillText('R – yeniden başla', CW/2, CH/2 + 36);
+}
+
+init();
+</script>
+</body>
+</html>
